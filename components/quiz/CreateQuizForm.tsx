@@ -68,7 +68,7 @@ export function CreateQuizForm({
     const res = await fetch("/api/youtube", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url }),
+      body: JSON.stringify({ url, language }),
     });
     const data = await res.json();
     if (!res.ok) {

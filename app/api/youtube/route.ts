@@ -20,8 +20,15 @@ const ERROR_MESSAGES: Record<string, string> = {
     "Could not fetch the transcript right now. Please try again, or paste the transcript as text instead.",
 };
 
+// Map the quiz UI language setting to an ISO 639-1 transcript preference.
+const LANG_MAP: Record<string, string> = {
+  english: "en",
+  hindi: "hi",
+  hinglish: "hi",
+};
+
 export async function POST(request: Request) {
-  let body: { url?: string };
+  let body: { url?: string; language?: string };
   try {
     body = await request.json();
   } catch {
@@ -54,6 +61,7 @@ export async function POST(request: Request) {
         text = await fetchTranscriptSupadata(
           `https://www.youtube.com/watch?v=${videoId}`,
           supadataKey,
+          LANG_MAP[(body.language ?? "").toLowerCase()] ?? "en",
         );
       } catch (err) {
         if (err instanceof TranscriptError && err.code === "NO_CAPTIONS") {

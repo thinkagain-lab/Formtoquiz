@@ -157,11 +157,15 @@ export async function fetchTranscriptDirect(videoId: string): Promise<string> {
 export async function fetchTranscriptSupadata(
   url: string,
   apiKey: string,
+  lang?: string,
 ): Promise<string> {
   const endpoint = new URL("https://api.supadata.ai/v1/transcript");
   endpoint.searchParams.set("url", url);
   endpoint.searchParams.set("text", "true");
   endpoint.searchParams.set("mode", "auto");
+  // Preferred language only: Supadata falls back to the first available
+  // language when the requested one doesn't exist for the video.
+  if (lang) endpoint.searchParams.set("lang", lang);
 
   let res: Response;
   try {
