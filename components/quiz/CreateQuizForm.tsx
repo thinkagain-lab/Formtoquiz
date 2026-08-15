@@ -41,6 +41,7 @@ export function CreateQuizForm({
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [ytHelp, setYtHelp] = useState(false);
   const [fileName, setFileName] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -70,13 +71,19 @@ export function CreateQuizForm({
       body: JSON.stringify({ url }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Failed to fetch transcript");
+    if (!res.ok) {
+      // Show the copy-paste fallback guide for transcript-availability
+      // failures (but not for e.g. a malformed URL).
+      if (data.code && data.code !== "BAD_URL") setYtHelp(true);
+      throw new Error(data.error || "Failed to fetch transcript");
+    }
     setContent(data.text);
     return data.text as string;
   };
 
   const generate = async () => {
     setError(null);
+    setYtHelp(false);
     setLoading(true);
     try {
       let text = content;
@@ -120,6 +127,7 @@ export function CreateQuizForm({
                 setTab(t.id);
                 setError(null);
                 setStatus(null);
+                setYtHelp(false);
               }}
               className={cn(
                 "inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition-colors",
@@ -247,6 +255,38 @@ export function CreateQuizForm({
           <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {error}
           </p>
+        )}
+        {ytHelp && (
+          <div className="rounded-md border border-primary/40 bg-accent/40 px-4 py-3 text-sm">
+            <p className="font-medium">
+              Quick workaround: copy the transcript yourself
+            </p>
+            <ol className="mt-2 list-decimal space-y-1 pl-5 text-muted-foreground">
+              <li>Open the video on YouTube.</li>
+              <li>
+                Below the title, expand the description (tap{" "}
+                <strong>…more</strong>) and click{" "}
+                <strong>Show transcript</strong>.
+              </li>
+              <li>Select and copy the transcript text.</li>
+              <li>
+                Paste it in the <strong>Paste text</strong> tab here and
+                generate.
+              </li>
+            </ol>
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-3 gap-2"
+              onClick={() => {
+                setTab("text");
+                setError(null);
+                setYtHelp(false);
+              }}
+            >
+              <Type className="h-4 w-4" /> Go to Paste text
+            </Button>
+          </div>
         )}
         {status && !error && (
           <p className="text-sm text-muted-foreground">{status}</p>

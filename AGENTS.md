@@ -37,6 +37,23 @@ Before launch, implement:
 - Rate limiting on the API routes (IP-based) to protect the Groq API key
   budget from abuse even for logged-out visitors.
 
+## Known constraints
+
+### YouTube transcripts and cloud IP blocking
+
+Since late 2024 YouTube blocks its transcript/caption endpoints for
+datacenter IPs (Vercel, AWS, GCP...). Consequences:
+
+- Direct fetching (`lib/youtube.ts` `fetchTranscriptDirect`) works from
+  residential IPs (local dev) but NOT from Vercel or this Cloud Agent VM.
+- Production needs `SUPADATA_API_KEY` (hosted transcript API,
+  https://supadata.ai, free tier available) — `/api/youtube` uses it
+  automatically when set.
+- When both methods fail, the API returns an error `code` and the UI shows a
+  copy-the-transcript-manually guide (`ytHelp` in
+  `components/quiz/CreateQuizForm.tsx`).
+- Do NOT add back the `youtube-transcript` npm package; it is broken.
+
 ## Development tips
 
 - `GUEST_LIMIT` in `app/app/page.tsx` can be raised while testing, or reset

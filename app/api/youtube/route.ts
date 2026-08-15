@@ -1,9 +1,24 @@
 import { NextResponse } from "next/server";
-import { YoutubeTranscript } from "youtube-transcript";
+import {
+  TranscriptError,
+  extractVideoId,
+  fetchTranscriptDirect,
+  fetchTranscriptSupadata,
+} from "@/lib/youtube";
 
 export const runtime = "nodejs";
 
 const MAX_CHARS = 15000;
+
+const ERROR_MESSAGES: Record<string, string> = {
+  BAD_URL: "That doesn't look like a valid YouTube URL.",
+  NO_CAPTIONS:
+    "This video has no captions/transcript available. Try a different video, or paste the content as text instead.",
+  BLOCKED:
+    "YouTube blocks transcript requests from cloud servers. Copy the transcript from YouTube (open the video, expand the description, click \"Show transcript\") and paste it as text — or ask the site owner to configure a transcript API key.",
+  FETCH_FAILED:
+    "Could not fetch the transcript right now. Please try again, or paste the transcript as text instead.",
+};
 
 export async function POST(request: Request) {
   let body: { url?: string };
@@ -15,32 +30,54 @@ export async function POST(request: Request) {
 
   const url = (body.url ?? "").toString().trim();
   if (!url) {
-    return NextResponse.json({ error: "No YouTube URL provided." }, { status: 400 });
+    return NextResponse.json(
+      { error: "No YouTube URL provided.", code: "BAD_URL" },
+      { status: 400 },
+    );
   }
 
-  try {
-    const items = await YoutubeTranscript.fetchTranscript(url);
-    const text = items
-      .map((i) => i.text)
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, MAX_CHARS);
+  const videoId = extractVideoId(url);
+  if (!videoId) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.BAD_URL, code: "BAD_URL" },
+      { status: 400 },
+    );
+  }
 
+  const supadataKey = process.env.SUPADATA_API_KEY;
+
+  try {
+    let text: string;
+    if (supadataKey) {
+      // Hosted API first: it's the only method that works from cloud IPs.
+      try {
+        text = await fetchTranscriptSupadata(
+          `https://www.youtube.com/watch?v=${videoId}`,
+          supadataKey,
+        );
+      } catch (err) {
+        if (err instanceof TranscriptError && err.code === "NO_CAPTIONS") {
+          throw err;
+        }
+        text = await fetchTranscriptDirect(videoId);
+      }
+    } else {
+      text = await fetchTranscriptDirect(videoId);
+    }
+
+    text = text.slice(0, MAX_CHARS);
     if (!text) {
       return NextResponse.json(
-        { error: "No transcript found for this video." },
+        { error: ERROR_MESSAGES.NO_CAPTIONS, code: "NO_CAPTIONS" },
         { status: 422 },
       );
     }
     return NextResponse.json({ text });
   } catch (err) {
     console.error("YouTube transcript fetch failed:", err);
+    const code = err instanceof TranscriptError ? err.code : "FETCH_FAILED";
     return NextResponse.json(
-      {
-        error:
-          "Could not fetch a transcript for this video. It may have captions disabled, or the region may be restricted. Try pasting the transcript as text instead.",
-      },
+      { error: ERROR_MESSAGES[code], code },
       { status: 422 },
     );
   }
