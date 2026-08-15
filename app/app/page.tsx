@@ -12,6 +12,9 @@ import { CreateQuizForm } from "@/components/quiz/CreateQuizForm";
 import { QuestionCard } from "@/components/quiz/QuestionCard";
 import { ExportButtons } from "@/components/quiz/ExportButtons";
 
+// PRE-LAUNCH: this limit is client-side only (localStorage) and easily
+// bypassed. Real enforcement must happen server-side in the API routes,
+// tied to auth + DB quota. See AGENTS.md "Pre-launch requirements".
 const GUEST_LIMIT = 2;
 const STORAGE_KEY = "ftq_guest_quizzes_used";
 
