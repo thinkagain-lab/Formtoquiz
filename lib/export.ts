@@ -103,9 +103,8 @@ export function downloadBlob(filename: string, blob: Blob): void {
   URL.revokeObjectURL(url);
 }
 
-// Google Forms requires OAuth, which is out of scope for a zero-config demo.
-// Instead we generate a self-contained Google Apps Script the user can paste
-// into script.google.com to build the exact same form in their own account.
+// Manual fallback when OAuth / Forms API is unavailable.
+// Prefer POST /api/create-google-form (see ExportButtons "Create Google Form").
 export function quizToAppsScript(quiz: Quiz): string {
   const data = JSON.stringify(quiz, null, 2);
   return `// FormToQuiz -> Google Forms

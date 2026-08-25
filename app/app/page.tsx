@@ -17,16 +17,47 @@ import { ExportButtons } from "@/components/quiz/ExportButtons";
 // tied to auth + DB quota. See AGENTS.md "Pre-launch requirements".
 const GUEST_LIMIT = 2;
 const STORAGE_KEY = "ftq_guest_quizzes_used";
+const QUIZ_STORAGE_KEY = "ftq_current_quiz";
+
+type StoredQuiz = {
+  quiz: Quiz;
+  source: GenerateResponse["source"] | null;
+};
 
 export default function AppPage() {
   const [quiz, setQuiz] = useState<Quiz | null>(null);
   const [source, setSource] = useState<GenerateResponse["source"] | null>(null);
   const [used, setUsed] = useState(0);
+  const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
     const stored = Number(localStorage.getItem(STORAGE_KEY) ?? "0");
     if (!Number.isNaN(stored)) setUsed(stored);
+
+    try {
+      const raw = sessionStorage.getItem(QUIZ_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as StoredQuiz;
+        if (parsed?.quiz?.questions?.length) {
+          setQuiz(parsed.quiz);
+          setSource(parsed.source ?? null);
+        }
+      }
+    } catch {
+      sessionStorage.removeItem(QUIZ_STORAGE_KEY);
+    }
+    setHydrated(true);
   }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    if (!quiz) {
+      sessionStorage.removeItem(QUIZ_STORAGE_KEY);
+      return;
+    }
+    const payload: StoredQuiz = { quiz, source };
+    sessionStorage.setItem(QUIZ_STORAGE_KEY, JSON.stringify(payload));
+  }, [quiz, source, hydrated]);
 
   const handleGenerated = (
     generated: Quiz,
@@ -58,6 +89,7 @@ export default function AppPage() {
   const reset = () => {
     setQuiz(null);
     setSource(null);
+    sessionStorage.removeItem(QUIZ_STORAGE_KEY);
   };
 
   const atLimit = used >= GUEST_LIMIT;

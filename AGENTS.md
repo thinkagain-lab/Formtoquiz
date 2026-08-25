@@ -10,7 +10,8 @@ the full product spec.
 - Quiz generation API: `app/api/generate/route.ts` (Groq, falls back to offline mode without `GROQ_API_KEY`)
 - Main app page + free-quota logic: `app/app/page.tsx`
 - Export logic (CSV / PDF / Apps Script): `lib/export.ts`, `components/quiz/ExportButtons.tsx`
-- Google Form how-to-use guide modal: `components/quiz/GoogleFormGuideModal.tsx`
+- One-click Google Form (Forms API): `app/api/create-google-form/route.ts`, `app/api/google/auth/route.ts`, `lib/google-forms.ts` — needs `NEXT_PUBLIC_GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`
+- Google Form how-to-use guide modal (Apps Script fallback): `components/quiz/GoogleFormGuideModal.tsx`
 
 ## Pre-launch requirements (MUST be done before real users)
 
