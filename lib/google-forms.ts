@@ -39,7 +39,6 @@ function explanationText(q: Question): string | undefined {
   return text || undefined;
 }
 
-/** MCQ / T-F: whenRight/whenWrong only (never generalFeedback). */
 function gradingForChoice(q: Question) {
   const correct = resolveCorrectAnswer(q);
   const options =
@@ -64,7 +63,6 @@ function gradingForChoice(q: Question) {
   return grading;
 }
 
-/** Short answer: generalFeedback only (never whenRight/whenWrong). */
 function gradingForText(q: Question) {
   const correct = resolveCorrectAnswer(q);
   if (!correct) return undefined;
@@ -154,7 +152,13 @@ async function readError(res: Response, stage: string): Promise<string> {
     if (/ACCESS_NOT_CONFIGURED|has not been used|disabled/i.test(message)) {
       return (
         "Google Forms API is not enabled for this Cloud project. " +
-        "Enable it in APIs & Services → Library, then wait a minute and retry."
+        "Open https://console.cloud.google.com/apis/library/forms.googleapis.com and click Enable, then retry."
+      );
+    }
+    if (/INTERNAL/i.test(message) || data.error?.status === "INTERNAL") {
+      return (
+        `${stage}: Google returned Internal error. Enable Google Forms API + Google Drive API for your Cloud project, ` +
+        "add both scopes under Auth Platform → Data Access, then click Create Google Form again and approve the new permissions."
       );
     }
     return `${stage}: ${message}${status}`;
@@ -182,6 +186,73 @@ async function batchUpdate(
   }
 }
 
+async function logTokenScopes(accessToken: string): Promise<void> {
+  try {
+    const res = await fetch(
+      `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(accessToken)}`,
+    );
+    if (!res.ok) {
+      console.warn("tokeninfo failed:", res.status);
+      return;
+    }
+    const data = (await res.json()) as { scope?: string; aud?: string };
+    console.info("Google token scopes:", data.scope);
+    console.info("Google token audience:", data.aud);
+  } catch (err) {
+    console.warn("tokeninfo error:", err);
+  }
+}
+
+async function createEmptyForm(
+  accessToken: string,
+  title: string,
+): Promise<{
+  formId: string;
+  responderUri?: string;
+  infoTitle?: string;
+}> {
+  const bodies = [
+    { info: { title } },
+    { info: { title, documentTitle: title } },
+  ];
+  const urls = [`${FORMS_API}?unpublished=true`, FORMS_API];
+
+  let lastError = "Create form failed.";
+  for (const url of urls) {
+    for (const body of bodies) {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const createRes = await formsFetch(accessToken, url, {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+        if (createRes.ok) {
+          const created = (await createRes.json()) as {
+            formId?: string;
+            responderUri?: string;
+            info?: { title?: string };
+          };
+          if (!created.formId) {
+            throw new Error("Google Forms API did not return a form ID.");
+          }
+          return {
+            formId: created.formId,
+            responderUri: created.responderUri,
+            infoTitle: created.info?.title,
+          };
+        }
+
+        lastError = await readError(createRes, "Create form");
+        const retryable = /Internal error|INTERNAL|Unavailable|503/i.test(
+          lastError,
+        );
+        if (!retryable || attempt === 3) break;
+        await new Promise((r) => setTimeout(r, attempt * 700));
+      }
+    }
+  }
+  throw new Error(lastError);
+}
+
 /**
  * Creates a Google Form quiz in the authorized user's Drive via the Forms API.
  */
@@ -196,31 +267,14 @@ export async function createGoogleFormFromQuiz(
     throw new Error("Quiz must include at least one question.");
   }
 
-  const createRes = await formsFetch(accessToken, FORMS_API, {
-    method: "POST",
-    body: JSON.stringify({
-      info: {
-        title: quiz.title.trim().slice(0, 300),
-      },
-    }),
-  });
+  await logTokenScopes(accessToken);
 
-  if (!createRes.ok) {
-    throw new Error(await readError(createRes, "Create form"));
-  }
-
-  const created = (await createRes.json()) as {
-    formId?: string;
-    responderUri?: string;
-    info?: { title?: string };
-  };
-
+  const created = await createEmptyForm(
+    accessToken,
+    quiz.title.trim().slice(0, 300),
+  );
   const formId = created.formId;
-  if (!formId) {
-    throw new Error("Google Forms API did not return a form ID.");
-  }
 
-  // Quiz mode must be enabled before graded questions are added.
   await batchUpdate(
     accessToken,
     formId,
@@ -249,8 +303,6 @@ export async function createGoogleFormFromQuiz(
       "Add questions",
     );
   } catch (err) {
-    // Some quiz payloads (grading edge cases) return opaque INTERNAL errors.
-    // Retry once without answer keys so the form still gets created.
     console.warn(
       "Add questions with grading failed, retrying without grading:",
       err,
@@ -289,7 +341,7 @@ export async function createGoogleFormFromQuiz(
 
   const getRes = await formsFetch(accessToken, `${FORMS_API}/${formId}`);
   let responderUrl = created.responderUri ?? "";
-  let title = created.info?.title ?? quiz.title;
+  let title = created.infoTitle ?? quiz.title;
 
   if (getRes.ok) {
     const form = (await getRes.json()) as {
