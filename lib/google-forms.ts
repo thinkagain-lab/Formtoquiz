@@ -133,11 +133,17 @@ async function formsFetch(
   url: string,
   init?: RequestInit,
 ): Promise<Response> {
+  const project =
+    process.env.GOOGLE_CLOUD_PROJECT?.trim() ||
+    process.env.GOOGLE_CLOUD_PROJECT_NUMBER?.trim() ||
+    "";
+
   return fetch(url, {
     ...init,
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
+      ...(project ? { "X-Goog-User-Project": project } : {}),
       ...(init?.headers ?? {}),
     },
   });
@@ -156,10 +162,15 @@ async function readError(res: Response, stage: string): Promise<string> {
       );
     }
     if (/INTERNAL/i.test(message) || data.error?.status === "INTERNAL") {
+      const detail =
+        data.error?.details && data.error.details.length
+          ? ` Details: ${JSON.stringify(data.error.details)}`
+          : "";
       return (
-        `${stage}: Google Forms API returned Internal error. ` +
-        "Confirm Google Forms API is Enabled (not just scopes), then revoke FormToQuiz at " +
-        "https://myaccount.google.com/permissions and click Create Google Form again."
+        `${stage}: Google Forms API Internal error.${detail} ` +
+        "On the Cloud project that owns your OAuth client: enable Billing (free tier is fine), " +
+        "enable Forms API + Drive API, and ensure your Google account is Owner/Editor. " +
+        "Then set Vercel env GOOGLE_CLOUD_PROJECT=form-to-quiz-506607 and redeploy."
       );
     }
     return `${stage}: ${message}${status}`;
@@ -187,20 +198,22 @@ async function batchUpdate(
   }
 }
 
-async function logTokenScopes(accessToken: string): Promise<void> {
+async function logTokenScopes(accessToken: string): Promise<string | null> {
   try {
     const res = await fetch(
       `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(accessToken)}`,
     );
     if (!res.ok) {
       console.warn("tokeninfo failed:", res.status);
-      return;
+      return null;
     }
     const data = (await res.json()) as { scope?: string; aud?: string };
     console.info("Google token scopes:", data.scope);
     console.info("Google token audience:", data.aud);
+    return data.scope ?? null;
   } catch (err) {
     console.warn("tokeninfo error:", err);
+    return null;
   }
 }
 
@@ -268,12 +281,16 @@ export async function createGoogleFormFromQuiz(
     throw new Error("Quiz must include at least one question.");
   }
 
-  await logTokenScopes(accessToken);
+  const scopes = await logTokenScopes(accessToken);
+  if (scopes && !scopes.includes("forms.body")) {
+    throw new Error(
+      "Google token is missing forms.body scope. Revoke FormToQuiz at https://myaccount.google.com/permissions and sign in again.",
+    );
+  }
 
-  const created = await createEmptyForm(
-    accessToken,
-    quiz.title.trim().slice(0, 300),
-  );
+  // Create with a plain title first (special characters in titles have
+  // triggered opaque INTERNAL errors for some accounts), then rename.
+  const created = await createEmptyForm(accessToken, "FormToQuiz");
   const formId = created.formId;
 
   await batchUpdate(
@@ -288,8 +305,11 @@ export async function createGoogleFormFromQuiz(
       },
       {
         updateFormInfo: {
-          info: { description: "Generated with FormToQuiz" },
-          updateMask: "description",
+          info: {
+            title: quiz.title.trim().slice(0, 300),
+            description: "Generated with FormToQuiz",
+          },
+          updateMask: "title,description",
         },
       },
     ],
