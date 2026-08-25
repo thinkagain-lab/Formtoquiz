@@ -42,7 +42,8 @@ const GOOGLE_ERROR_MESSAGES: Record<string, string> = {
     "Google blocked access. Sign in with the Gmail you added as a Test user (Auth Platform → Audience).",
   not_configured:
     "Google OAuth is missing GOOGLE_CLIENT_SECRET in .env.local. Restart the server after adding it.",
-  invalid_state: "Google sign-in expired. Click Create Google Form again.",
+  invalid_state:
+    "Google sign-in session was invalid. Click Create Google Form again (do not use an old browser tab).",
   token_exchange:
     "Could not finish Google sign-in. Confirm the redirect URI is exactly http://localhost:3000/api/google/callback and that GOOGLE_CLIENT_SECRET matches the Cloud Console.",
   network:

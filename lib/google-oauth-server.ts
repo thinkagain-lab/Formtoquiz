@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "crypto";
+import { createHmac, createHash, randomBytes, timingSafeEqual } from "crypto";
 import dns from "dns";
 import type { NextResponse } from "next/server";
 
@@ -15,15 +15,16 @@ export const GOOGLE_FORMS_SCOPES = [
   "https://www.googleapis.com/auth/drive.file",
 ].join(" ");
 
-export const STATE_COOKIE = "ftq_g_state";
-export const VERIFIER_COOKIE = "ftq_g_verifier";
 export const TOKEN_COOKIE = "ftq_g_token";
 
-function cookieBase() {
+function cookieBase(request?: Request) {
+  const origin = request ? getRequestOrigin(request) : "";
+  const secure =
+    process.env.NODE_ENV === "production" || origin.startsWith("https://");
   return {
     httpOnly: true,
     sameSite: "lax" as const,
-    secure: process.env.NODE_ENV === "production",
+    secure,
     path: "/",
   };
 }
@@ -64,12 +65,19 @@ export function getGoogleRedirectUri(request: Request): string {
   return `${getRequestOrigin(request)}/api/google/callback`;
 }
 
-function base64Url(buf: Buffer): string {
-  return buf
+function base64Url(buf: Buffer | string): string {
+  const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf, "utf8");
+  return b
     .toString("base64")
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/g, "");
+}
+
+function fromBase64Url(value: string): Buffer {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/");
+  const pad = padded.length % 4 === 0 ? "" : "=".repeat(4 - (padded.length % 4));
+  return Buffer.from(padded + pad, "base64");
 }
 
 export function createPkcePair(): { verifier: string; challenge: string } {
@@ -78,33 +86,63 @@ export function createPkcePair(): { verifier: string; challenge: string } {
   return { verifier, challenge };
 }
 
-export function createOAuthState(): string {
-  return base64Url(randomBytes(24));
+/**
+ * Pack PKCE verifier into a signed OAuth `state` so Vercel/serverless does not
+ * depend on cookies surviving the Google redirect round-trip.
+ */
+export function createSignedOAuthState(verifier: string): string {
+  const secret = getGoogleClientSecret();
+  const payload = base64Url(
+    JSON.stringify({
+      v: verifier,
+      t: Date.now(),
+      n: base64Url(randomBytes(8)),
+    }),
+  );
+  const sig = createHmac("sha256", secret).update(payload).digest();
+  return `${payload}.${base64Url(sig)}`;
 }
 
-export function applyOAuthStartCookies(
-  res: NextResponse,
-  state: string,
-  verifier: string,
-): void {
-  res.cookies.set(STATE_COOKIE, state, { ...cookieBase(), maxAge: 600 });
-  res.cookies.set(VERIFIER_COOKIE, verifier, { ...cookieBase(), maxAge: 600 });
+export function parseSignedOAuthState(state: string): { verifier: string } | null {
+  const secret = getGoogleClientSecret();
+  if (!secret || !state.includes(".")) return null;
+
+  const [payload, sig] = state.split(".");
+  if (!payload || !sig) return null;
+
+  const expected = createHmac("sha256", secret).update(payload).digest();
+  const actual = fromBase64Url(sig);
+  if (
+    expected.length !== actual.length ||
+    !timingSafeEqual(expected, actual)
+  ) {
+    return null;
+  }
+
+  try {
+    const data = JSON.parse(fromBase64Url(payload).toString("utf8")) as {
+      v?: string;
+      t?: number;
+    };
+    if (!data.v || typeof data.v !== "string") return null;
+    // Reject states older than 15 minutes.
+    if (!data.t || Date.now() - data.t > 15 * 60 * 1000) return null;
+    return { verifier: data.v };
+  } catch {
+    return null;
+  }
 }
 
 export function applyAccessTokenCookie(
   res: NextResponse,
   token: string,
   expiresIn: number,
+  request?: Request,
 ): void {
   res.cookies.set(TOKEN_COOKIE, token, {
-    ...cookieBase(),
+    ...cookieBase(request),
     maxAge: Math.max(60, Math.min(expiresIn, 3600)),
   });
-}
-
-export function clearOAuthStartCookies(res: NextResponse): void {
-  res.cookies.delete(STATE_COOKIE);
-  res.cookies.delete(VERIFIER_COOKIE);
 }
 
 export async function exchangeGoogleCode(opts: {
