@@ -157,8 +157,9 @@ async function readError(res: Response, stage: string): Promise<string> {
     }
     if (/INTERNAL/i.test(message) || data.error?.status === "INTERNAL") {
       return (
-        `${stage}: Google returned Internal error. Enable Google Forms API + Google Drive API for your Cloud project, ` +
-        "add both scopes under Auth Platform → Data Access, then click Create Google Form again and approve the new permissions."
+        `${stage}: Google Forms API returned Internal error. ` +
+        "Confirm Google Forms API is Enabled (not just scopes), then revoke FormToQuiz at " +
+        "https://myaccount.google.com/permissions and click Create Google Form again."
       );
     }
     return `${stage}: ${message}${status}`;

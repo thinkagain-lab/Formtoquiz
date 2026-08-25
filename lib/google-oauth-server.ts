@@ -12,9 +12,7 @@ try {
 
 export const GOOGLE_FORMS_SCOPES = [
   "https://www.googleapis.com/auth/forms.body",
-  // Official Forms samples use Drive; drive.file alone has caused opaque
-  // INTERNAL errors for forms.create for some accounts.
-  "https://www.googleapis.com/auth/drive",
+  "https://www.googleapis.com/auth/drive.file",
 ].join(" ");
 
 export const TOKEN_COOKIE = "ftq_g_token";
