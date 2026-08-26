@@ -132,6 +132,7 @@ async function formsFetch(
   accessToken: string,
   url: string,
   init?: RequestInit,
+  withProjectHeader = false,
 ): Promise<Response> {
   const project =
     process.env.GOOGLE_CLOUD_PROJECT?.trim() ||
@@ -143,7 +144,9 @@ async function formsFetch(
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
-      ...(project ? { "X-Goog-User-Project": project } : {}),
+      ...(withProjectHeader && project
+        ? { "X-Goog-User-Project": project }
+        : {}),
       ...(init?.headers ?? {}),
     },
   });
@@ -157,20 +160,8 @@ async function readError(res: Response, stage: string): Promise<string> {
     console.error(`Google Forms API ${stage} failed:`, JSON.stringify(data));
     if (/ACCESS_NOT_CONFIGURED|has not been used|disabled/i.test(message)) {
       return (
-        "Google Forms API is not enabled for this Cloud project. " +
-        "Open https://console.cloud.google.com/apis/library/forms.googleapis.com and click Enable, then retry."
-      );
-    }
-    if (/INTERNAL/i.test(message) || data.error?.status === "INTERNAL") {
-      const detail =
-        data.error?.details && data.error.details.length
-          ? ` Details: ${JSON.stringify(data.error.details)}`
-          : "";
-      return (
-        `${stage}: Google Forms API Internal error.${detail} ` +
-        "On the Cloud project that owns your OAuth client: enable Billing (free tier is fine), " +
-        "enable Forms API + Drive API, and ensure your Google account is Owner/Editor. " +
-        "Then set Vercel env GOOGLE_CLOUD_PROJECT=form-to-quiz-506607 and redeploy."
+        "Google Forms API is not enabled. Enable it at " +
+        "https://console.cloud.google.com/apis/library/forms.googleapis.com then retry."
       );
     }
     return `${stage}: ${message}${status}`;
@@ -185,35 +176,23 @@ async function batchUpdate(
   requests: unknown[],
   stage: string,
 ): Promise<void> {
-  const res = await formsFetch(
+  // Prefer no quota header (OAuth user tokens); retry with header if needed.
+  let res = await formsFetch(
     accessToken,
     `${FORMS_API}/${formId}:batchUpdate`,
-    {
-      method: "POST",
-      body: JSON.stringify({ requests }),
-    },
+    { method: "POST", body: JSON.stringify({ requests }) },
+    false,
   );
   if (!res.ok) {
-    throw new Error(await readError(res, stage));
-  }
-}
-
-async function logTokenScopes(accessToken: string): Promise<string | null> {
-  try {
-    const res = await fetch(
-      `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(accessToken)}`,
+    res = await formsFetch(
+      accessToken,
+      `${FORMS_API}/${formId}:batchUpdate`,
+      { method: "POST", body: JSON.stringify({ requests }) },
+      true,
     );
-    if (!res.ok) {
-      console.warn("tokeninfo failed:", res.status);
-      return null;
-    }
-    const data = (await res.json()) as { scope?: string; aud?: string };
-    console.info("Google token scopes:", data.scope);
-    console.info("Google token audience:", data.aud);
-    return data.scope ?? null;
-  } catch (err) {
-    console.warn("tokeninfo error:", err);
-    return null;
+  }
+  if (!res.ok) {
+    throw new Error(await readError(res, stage));
   }
 }
 
@@ -225,43 +204,58 @@ async function createEmptyForm(
   responderUri?: string;
   infoTitle?: string;
 }> {
-  const bodies = [
-    { info: { title } },
-    { info: { title, documentTitle: title } },
+  const attempts: Array<{ url: string; body: object; withProject: boolean }> = [
+    {
+      url: `${FORMS_API}?unpublished=true`,
+      body: { info: { title } },
+      withProject: false,
+    },
+    {
+      url: FORMS_API,
+      body: { info: { title } },
+      withProject: false,
+    },
+    {
+      url: `${FORMS_API}?unpublished=true`,
+      body: { info: { title } },
+      withProject: true,
+    },
+    {
+      url: FORMS_API,
+      body: { info: { title, documentTitle: title } },
+      withProject: true,
+    },
   ];
-  const urls = [`${FORMS_API}?unpublished=true`, FORMS_API];
 
   let lastError = "Create form failed.";
-  for (const url of urls) {
-    for (const body of bodies) {
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        const createRes = await formsFetch(accessToken, url, {
-          method: "POST",
-          body: JSON.stringify(body),
-        });
-        if (createRes.ok) {
-          const created = (await createRes.json()) as {
-            formId?: string;
-            responderUri?: string;
-            info?: { title?: string };
-          };
-          if (!created.formId) {
-            throw new Error("Google Forms API did not return a form ID.");
-          }
-          return {
-            formId: created.formId,
-            responderUri: created.responderUri,
-            infoTitle: created.info?.title,
-          };
+  for (const attempt of attempts) {
+    for (let i = 1; i <= 2; i++) {
+      const createRes = await formsFetch(
+        accessToken,
+        attempt.url,
+        { method: "POST", body: JSON.stringify(attempt.body) },
+        attempt.withProject,
+      );
+      if (createRes.ok) {
+        const created = (await createRes.json()) as {
+          formId?: string;
+          responderUri?: string;
+          info?: { title?: string };
+        };
+        if (!created.formId) {
+          throw new Error("Google Forms API did not return a form ID.");
         }
-
-        lastError = await readError(createRes, "Create form");
-        const retryable = /Internal error|INTERNAL|Unavailable|503/i.test(
-          lastError,
-        );
-        if (!retryable || attempt === 3) break;
-        await new Promise((r) => setTimeout(r, attempt * 700));
+        return {
+          formId: created.formId,
+          responderUri: created.responderUri,
+          infoTitle: created.info?.title,
+        };
       }
+      lastError = await readError(createRes, "Create form");
+      if (!/Internal error|INTERNAL|Unavailable|503/i.test(lastError)) {
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 600 * i));
     }
   }
   throw new Error(lastError);
@@ -281,15 +275,23 @@ export async function createGoogleFormFromQuiz(
     throw new Error("Quiz must include at least one question.");
   }
 
-  const scopes = await logTokenScopes(accessToken);
-  if (scopes && !scopes.includes("forms.body")) {
-    throw new Error(
-      "Google token is missing forms.body scope. Revoke FormToQuiz at https://myaccount.google.com/permissions and sign in again.",
+  try {
+    const tokeninfo = await fetch(
+      `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(accessToken)}`,
     );
+    if (tokeninfo.ok) {
+      const data = (await tokeninfo.json()) as { scope?: string };
+      console.info("Google token scopes:", data.scope);
+      if (data.scope && !data.scope.includes("forms.body")) {
+        throw new Error(
+          "Google token is missing forms.body. Revoke FormToQuiz at https://myaccount.google.com/permissions and sign in again.",
+        );
+      }
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("forms.body")) throw err;
   }
 
-  // Create with a plain title first (special characters in titles have
-  // triggered opaque INTERNAL errors for some accounts), then rename.
   const created = await createEmptyForm(accessToken, "FormToQuiz");
   const formId = created.formId;
 
@@ -324,10 +326,7 @@ export async function createGoogleFormFromQuiz(
       "Add questions",
     );
   } catch (err) {
-    console.warn(
-      "Add questions with grading failed, retrying without grading:",
-      err,
-    );
+    console.warn("Graded questions failed, retrying without answer keys:", err);
     await batchUpdate(
       accessToken,
       formId,
@@ -338,26 +337,25 @@ export async function createGoogleFormFromQuiz(
     );
   }
 
-  const publishRes = await formsFetch(
-    accessToken,
-    `${FORMS_API}/${formId}:setPublishSettings`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        publishSettings: {
-          publishState: {
-            isPublished: true,
-            isAcceptingResponses: true,
+  try {
+    await formsFetch(
+      accessToken,
+      `${FORMS_API}/${formId}:setPublishSettings`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          publishSettings: {
+            publishState: {
+              isPublished: true,
+              isAcceptingResponses: true,
+            },
           },
-        },
-      }),
-    },
-  );
-  if (!publishRes.ok) {
-    console.warn(
-      "setPublishSettings failed:",
-      await readError(publishRes, "Publish").catch(() => publishRes.status),
+        }),
+      },
+      false,
     );
+  } catch {
+    // Publishing is best-effort.
   }
 
   const getRes = await formsFetch(accessToken, `${FORMS_API}/${formId}`);

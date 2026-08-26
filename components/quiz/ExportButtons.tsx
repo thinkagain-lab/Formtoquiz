@@ -45,13 +45,13 @@ const GOOGLE_ERROR_MESSAGES: Record<string, string> = {
   invalid_state:
     "Google sign-in session was invalid. Click Create Google Form again (do not use an old browser tab).",
   bad_secret:
-    "GOOGLE_CLIENT_SECRET on Vercel does not match the secret in Google Cloud Console. Update it (no quotes), redeploy, then try again.",
+    "GOOGLE_CLIENT_SECRET on Vercel does not match Google Cloud Console. Copy the secret again (no quotes), save, Redeploy, then retry.",
   expired:
     "Google sign-in took too long and expired. Click Create Google Form again.",
   token_exchange:
     "Could not finish Google sign-in. Confirm redirect URI https://formtoquiz.vercel.app/api/google/callback and that GOOGLE_CLIENT_SECRET matches Cloud Console.",
   network:
-    "Your PC timed out reaching Google’s servers. Disable VPN if on, then click Create Google Form again.",
+    "Timed out reaching Google. Disable VPN if on, then click Create Google Form again.",
   oauth_error: "Google sign-in failed. Try again.",
 };
 
@@ -61,6 +61,7 @@ export function ExportButtons({ quiz }: { quiz: Quiz }) {
   const [exported, setExported] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [fallbackNote, setFallbackNote] = useState<string | null>(null);
   const [createdForm, setCreatedForm] = useState<CreatedGoogleForm | null>(
     null,
   );
@@ -76,7 +77,7 @@ export function ExportButtons({ quiz }: { quiz: Quiz }) {
 
   const exportPdf = () => downloadBlob(`${name}.pdf`, quizToPdfBlob(quiz));
 
-  const exportAppsScript = async () => {
+  const exportAppsScript = async (note?: string) => {
     const script = quizToAppsScript(quiz);
     downloadTextFile(gsFileName, script, "text/plain");
     let copied = false;
@@ -88,6 +89,7 @@ export function ExportButtons({ quiz }: { quiz: Quiz }) {
     }
     setAutoCopied(copied);
     setExported(true);
+    if (note) setFallbackNote(note);
     setGuideOpen(true);
   };
 
@@ -109,6 +111,20 @@ export function ExportButtons({ quiz }: { quiz: Quiz }) {
     setSuccessOpen(true);
   };
 
+  const createOrFallback = async () => {
+    try {
+      await postCreateForm();
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Failed to create Google Form.";
+      setCreateError(message);
+      // Always deliver a working path for today's deploy.
+      await exportAppsScript(
+        "One-click Google Form API failed, so we prepared the Apps Script export instead. Follow the steps to create your form in ~1 minute.",
+      );
+    }
+  };
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const status = params.get("google");
@@ -119,8 +135,12 @@ export function ExportButtons({ quiz }: { quiz: Quiz }) {
     window.history.replaceState({}, "", "/app");
 
     if (status === "error") {
-      setCreateError(
-        GOOGLE_ERROR_MESSAGES[reason] ?? GOOGLE_ERROR_MESSAGES.oauth_error,
+      const msg =
+        GOOGLE_ERROR_MESSAGES[reason] ?? GOOGLE_ERROR_MESSAGES.oauth_error;
+      setCreateError(msg);
+      // If OAuth itself failed, still offer Apps Script immediately.
+      void exportAppsScript(
+        "Google sign-in failed, so use the Apps Script path below to create your form.",
       );
       return;
     }
@@ -133,13 +153,8 @@ export function ExportButtons({ quiz }: { quiz: Quiz }) {
     creatingFromReturn.current = true;
     setCreating(true);
     setCreateError(null);
-    void postCreateForm()
-      .catch((err: unknown) => {
-        setCreateError(
-          err instanceof Error ? err.message : "Failed to create Google Form.",
-        );
-      })
-      .finally(() => setCreating(false));
+    setFallbackNote(null);
+    void createOrFallback().finally(() => setCreating(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on return from Google
   }, []);
 
@@ -156,12 +171,9 @@ export function ExportButtons({ quiz }: { quiz: Quiz }) {
     sessionStorage.removeItem("ftq_google_create_lock");
     setCreating(true);
     setCreateError(null);
+    setFallbackNote(null);
     try {
-      await postCreateForm();
-    } catch (err) {
-      setCreateError(
-        err instanceof Error ? err.message : "Failed to create Google Form.",
-      );
+      await createOrFallback();
     } finally {
       setCreating(false);
     }
@@ -195,7 +207,7 @@ export function ExportButtons({ quiz }: { quiz: Quiz }) {
         <Button
           variant="outline"
           size="sm"
-          onClick={exportAppsScript}
+          onClick={() => exportAppsScript()}
           className="gap-2"
           title="Download an Apps Script as a manual fallback"
         >
@@ -222,6 +234,12 @@ export function ExportButtons({ quiz }: { quiz: Quiz }) {
         </p>
       )}
 
+      {fallbackNote && (
+        <p className="text-sm text-amber-700 dark:text-amber-400" role="status">
+          {fallbackNote}
+        </p>
+      )}
+
       {createError && (
         <p className="text-sm text-destructive" role="alert">
           {createError}{" "}
@@ -230,14 +248,7 @@ export function ExportButtons({ quiz }: { quiz: Quiz }) {
             className="underline underline-offset-2"
             onClick={retryCreateWithExistingToken}
           >
-            Retry
-          </button>{" "}
-          <button
-            type="button"
-            className="underline underline-offset-2"
-            onClick={exportAppsScript}
-          >
-            Use Apps Script instead
+            Retry one-click
           </button>
         </p>
       )}
