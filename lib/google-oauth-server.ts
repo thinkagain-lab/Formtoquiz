@@ -8,9 +8,11 @@ try {
   // Older Node versions may not support this.
 }
 
+// Google's own Forms create samples use full Drive scope. drive.file alone
+// has produced opaque INTERNAL errors on forms.create for some projects.
 export const GOOGLE_FORMS_SCOPES = [
   "https://www.googleapis.com/auth/forms.body",
-  "https://www.googleapis.com/auth/drive.file",
+  "https://www.googleapis.com/auth/drive",
 ].join(" ");
 
 export const TOKEN_COOKIE = "ftq_g_token";

@@ -21,7 +21,7 @@ export async function GET(request: Request) {
     redirectUri: getGoogleRedirectUri(request),
     scopes: [
       "https://www.googleapis.com/auth/forms.body",
-      "https://www.googleapis.com/auth/drive.file",
+      "https://www.googleapis.com/auth/drive",
     ],
   });
 }

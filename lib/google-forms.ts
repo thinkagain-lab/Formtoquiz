@@ -205,11 +205,7 @@ async function createEmptyForm(
   infoTitle?: string;
 }> {
   const attempts: Array<{ url: string; body: object; withProject: boolean }> = [
-    {
-      url: `${FORMS_API}?unpublished=true`,
-      body: { info: { title } },
-      withProject: false,
-    },
+    // Simplest create first (matches Google's docs samples).
     {
       url: FORMS_API,
       body: { info: { title } },
@@ -218,11 +214,16 @@ async function createEmptyForm(
     {
       url: `${FORMS_API}?unpublished=true`,
       body: { info: { title } },
-      withProject: true,
+      withProject: false,
     },
     {
       url: FORMS_API,
       body: { info: { title, documentTitle: title } },
+      withProject: false,
+    },
+    {
+      url: FORMS_API,
+      body: { info: { title } },
       withProject: true,
     },
   ];

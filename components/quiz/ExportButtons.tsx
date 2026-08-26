@@ -19,7 +19,10 @@ import {
   quizToCsv,
   quizToPdfBlob,
 } from "@/lib/export";
-import type { CreatedGoogleForm } from "@/lib/google-forms";
+import {
+  createGoogleFormFromQuiz,
+  type CreatedGoogleForm,
+} from "@/lib/google-forms";
 import {
   isGoogleFormsConfigured,
   startGoogleFormOAuth,
@@ -93,12 +96,21 @@ export function ExportButtons({ quiz }: { quiz: Quiz }) {
     setGuideOpen(true);
   };
 
-  const postCreateForm = async () => {
+  const createViaBrowser = async (accessToken: string) => {
+    const form = await createGoogleFormFromQuiz(accessToken, quiz);
+    setCreatedForm(form);
+    setSuccessOpen(true);
+  };
+
+  const createViaServer = async (accessToken?: string) => {
     const res = await fetch("/api/create-google-form", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ quiz }),
+      body: JSON.stringify({
+        quiz,
+        ...(accessToken ? { accessToken } : {}),
+      }),
     });
     const data = (await res.json()) as {
       form?: CreatedGoogleForm;
@@ -112,13 +124,41 @@ export function ExportButtons({ quiz }: { quiz: Quiz }) {
   };
 
   const createOrFallback = async () => {
+    let accessToken: string | undefined;
     try {
-      await postCreateForm();
+      const tokenRes = await fetch("/api/google/access-token", {
+        credentials: "include",
+      });
+      const tokenData = (await tokenRes.json()) as {
+        accessToken?: string;
+        error?: string;
+      };
+      if (tokenRes.ok && tokenData.accessToken) {
+        accessToken = tokenData.accessToken;
+      }
+    } catch {
+      // Continue; server path can still use the httpOnly cookie.
+    }
+
+    // 1) Browser → Forms API (user's IP; avoids some server/datacenter failures)
+    if (accessToken) {
+      try {
+        await createViaBrowser(accessToken);
+        return;
+      } catch (err) {
+        console.warn("Browser Forms create failed, trying server:", err);
+      }
+    }
+
+    // 2) Server → Forms API
+    try {
+      await createViaServer(accessToken);
+      return;
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Failed to create Google Form.";
       setCreateError(message);
-      // Always deliver a working path for today's deploy.
+      // 3) Always ship a working path today
       await exportAppsScript(
         "One-click Google Form API failed, so we prepared the Apps Script export instead. Follow the steps to create your form in ~1 minute.",
       );
