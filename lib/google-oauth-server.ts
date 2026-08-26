@@ -2,8 +2,6 @@ import { createHmac, createHash, randomBytes, timingSafeEqual } from "crypto";
 import dns from "dns";
 import type { NextResponse } from "next/server";
 
-// Windows / ISP setups often advertise broken IPv6 routes; prefer IPv4 for
-// Google OAuth token exchange to avoid ConnectTimeoutError.
 try {
   dns.setDefaultResultOrder("ipv4first");
 } catch {
@@ -16,6 +14,17 @@ export const GOOGLE_FORMS_SCOPES = [
 ].join(" ");
 
 export const TOKEN_COOKIE = "ftq_g_token";
+
+function cleanEnv(value: string | undefined): string {
+  let s = (value ?? "").trim().replace(/^\uFEFF/, "");
+  if (
+    (s.startsWith('"') && s.endsWith('"')) ||
+    (s.startsWith("'") && s.endsWith("'"))
+  ) {
+    s = s.slice(1, -1).trim();
+  }
+  return s;
+}
 
 function cookieBase(request?: Request) {
   const origin = request ? getRequestOrigin(request) : "";
@@ -31,14 +40,13 @@ function cookieBase(request?: Request) {
 
 export function getGoogleClientId(): string {
   return (
-    process.env.GOOGLE_CLIENT_ID?.trim() ||
-    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID?.trim() ||
-    ""
+    cleanEnv(process.env.GOOGLE_CLIENT_ID) ||
+    cleanEnv(process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID)
   );
 }
 
 export function getGoogleClientSecret(): string {
-  return process.env.GOOGLE_CLIENT_SECRET?.trim() || "";
+  return cleanEnv(process.env.GOOGLE_CLIENT_SECRET);
 }
 
 export function isGoogleOAuthConfigured(): boolean {
@@ -46,7 +54,7 @@ export function isGoogleOAuthConfigured(): boolean {
 }
 
 export function getRequestOrigin(request: Request): string {
-  const fromEnv = process.env.NEXT_PUBLIC_APP_URL?.trim().replace(/\/$/, "");
+  const fromEnv = cleanEnv(process.env.NEXT_PUBLIC_APP_URL).replace(/\/$/, "");
   if (fromEnv) return fromEnv;
 
   const url = new URL(request.url);
@@ -76,60 +84,77 @@ function base64Url(buf: Buffer | string): string {
 
 function fromBase64Url(value: string): Buffer {
   const padded = value.replace(/-/g, "+").replace(/_/g, "/");
-  const pad = padded.length % 4 === 0 ? "" : "=".repeat(4 - (padded.length % 4));
+  const pad =
+    padded.length % 4 === 0 ? "" : "=".repeat(4 - (padded.length % 4));
   return Buffer.from(padded + pad, "base64");
 }
 
-export function createPkcePair(): { verifier: string; challenge: string } {
-  const verifier = base64Url(randomBytes(32));
-  const challenge = base64Url(createHash("sha256").update(verifier).digest());
-  return { verifier, challenge };
-}
-
 /**
- * Pack PKCE verifier into a signed OAuth `state` so Vercel/serverless does not
- * depend on cookies surviving the Google redirect round-trip.
+ * CSRF state for the confidential-client OAuth code flow (no PKCE).
+ * Signed with GOOGLE_CLIENT_SECRET so it does not rely on cookies.
  */
-export function createSignedOAuthState(verifier: string): string {
+export function createSignedOAuthState(): string {
   const secret = getGoogleClientSecret();
   const payload = base64Url(
     JSON.stringify({
-      v: verifier,
       t: Date.now(),
-      n: base64Url(randomBytes(8)),
+      n: base64Url(randomBytes(16)),
     }),
   );
-  const sig = createHmac("sha256", secret).update(payload).digest();
-  return `${payload}.${base64Url(sig)}`;
+  const sig = base64Url(
+    createHmac("sha256", secret).update(payload).digest(),
+  );
+  return `${payload}.${sig}`;
 }
 
-export function parseSignedOAuthState(state: string): { verifier: string } | null {
-  const secret = getGoogleClientSecret();
-  if (!secret || !state.includes(".")) return null;
+export type ParseStateResult =
+  | { ok: true; nonce: string }
+  | {
+      ok: false;
+      reason: "missing" | "malformed" | "bad_signature" | "expired" | "no_secret";
+    };
 
-  const [payload, sig] = state.split(".");
-  if (!payload || !sig) return null;
+export function parseSignedOAuthState(state: string | null): ParseStateResult {
+  const secret = getGoogleClientSecret();
+  if (!secret) return { ok: false, reason: "no_secret" };
+  if (!state) return { ok: false, reason: "missing" };
+
+  const dot = state.lastIndexOf(".");
+  if (dot <= 0) return { ok: false, reason: "malformed" };
+
+  const payload = state.slice(0, dot);
+  const sig = state.slice(dot + 1);
+  if (!payload || !sig) return { ok: false, reason: "malformed" };
 
   const expected = createHmac("sha256", secret).update(payload).digest();
-  const actual = fromBase64Url(sig);
+  let actual: Buffer;
+  try {
+    actual = fromBase64Url(sig);
+  } catch {
+    return { ok: false, reason: "malformed" };
+  }
+
   if (
     expected.length !== actual.length ||
     !timingSafeEqual(expected, actual)
   ) {
-    return null;
+    return { ok: false, reason: "bad_signature" };
   }
 
   try {
     const data = JSON.parse(fromBase64Url(payload).toString("utf8")) as {
-      v?: string;
       t?: number;
+      n?: string;
     };
-    if (!data.v || typeof data.v !== "string") return null;
-    // Reject states older than 15 minutes.
-    if (!data.t || Date.now() - data.t > 15 * 60 * 1000) return null;
-    return { verifier: data.v };
+    if (!data.n || typeof data.n !== "string") {
+      return { ok: false, reason: "malformed" };
+    }
+    if (!data.t || Date.now() - data.t > 20 * 60 * 1000) {
+      return { ok: false, reason: "expired" };
+    }
+    return { ok: true, nonce: data.n };
   } catch {
-    return null;
+    return { ok: false, reason: "malformed" };
   }
 }
 
@@ -148,7 +173,6 @@ export function applyAccessTokenCookie(
 export async function exchangeGoogleCode(opts: {
   code: string;
   redirectUri: string;
-  verifier: string;
 }): Promise<{ access_token: string; expires_in: number }> {
   const clientId = getGoogleClientId();
   const clientSecret = getGoogleClientSecret();
@@ -164,7 +188,6 @@ export async function exchangeGoogleCode(opts: {
     client_secret: clientSecret,
     redirect_uri: opts.redirectUri,
     grant_type: "authorization_code",
-    code_verifier: opts.verifier,
   });
 
   let lastError: unknown;
@@ -226,4 +249,11 @@ export async function exchangeGoogleCode(opts: {
   throw lastError instanceof Error
     ? lastError
     : new Error("Failed to exchange Google auth code.");
+}
+
+// Keep export for any leftover imports; PKCE no longer used.
+export function createPkcePair(): { verifier: string; challenge: string } {
+  const verifier = base64Url(randomBytes(32));
+  const challenge = base64Url(createHash("sha256").update(verifier).digest());
+  return { verifier, challenge };
 }

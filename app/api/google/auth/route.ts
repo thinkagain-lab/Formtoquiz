@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import {
   GOOGLE_FORMS_SCOPES,
-  createPkcePair,
   createSignedOAuthState,
   getGoogleClientId,
   getGoogleRedirectUri,
@@ -20,8 +19,7 @@ export async function GET(request: Request) {
     );
   }
 
-  const { verifier, challenge } = createPkcePair();
-  const state = createSignedOAuthState(verifier);
+  const state = createSignedOAuthState();
   const redirectUri = getGoogleRedirectUri(request);
 
   const params = new URLSearchParams({
@@ -31,9 +29,8 @@ export async function GET(request: Request) {
     scope: GOOGLE_FORMS_SCOPES,
     state,
     include_granted_scopes: "true",
+    access_type: "online",
     prompt: "select_account consent",
-    code_challenge: challenge,
-    code_challenge_method: "S256",
   });
 
   return NextResponse.redirect(

@@ -41,13 +41,17 @@ const GOOGLE_ERROR_MESSAGES: Record<string, string> = {
   access_denied:
     "Google blocked access. Sign in with the Gmail you added as a Test user (Auth Platform → Audience).",
   not_configured:
-    "Google OAuth is missing GOOGLE_CLIENT_SECRET in .env.local. Restart the server after adding it.",
+    "Google OAuth is missing GOOGLE_CLIENT_SECRET in Vercel env. Add it, redeploy, then try again.",
   invalid_state:
     "Google sign-in session was invalid. Click Create Google Form again (do not use an old browser tab).",
+  bad_secret:
+    "GOOGLE_CLIENT_SECRET on Vercel does not match the secret in Google Cloud Console. Update it (no quotes), redeploy, then try again.",
+  expired:
+    "Google sign-in took too long and expired. Click Create Google Form again.",
   token_exchange:
-    "Could not finish Google sign-in. Confirm the redirect URI is exactly http://localhost:3000/api/google/callback and that GOOGLE_CLIENT_SECRET matches the Cloud Console.",
+    "Could not finish Google sign-in. Confirm redirect URI https://formtoquiz.vercel.app/api/google/callback and that GOOGLE_CLIENT_SECRET matches Cloud Console.",
   network:
-    "Your PC timed out reaching Google’s servers. Disable VPN if on, allow Node.js through the firewall, then click Create Google Form again.",
+    "Your PC timed out reaching Google’s servers. Disable VPN if on, then click Create Google Form again.",
   oauth_error: "Google sign-in failed. Try again.",
 };
 

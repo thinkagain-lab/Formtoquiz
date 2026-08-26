@@ -21,8 +21,24 @@ export async function GET(request: Request) {
     return NextResponse.redirect(`${origin}/app?google=error&reason=${reason}`);
   }
 
-  const parsed = state ? parseSignedOAuthState(state) : null;
-  if (!code || !parsed) {
+  const parsed = parseSignedOAuthState(state);
+  if (!parsed.ok) {
+    console.error("OAuth state parse failed:", {
+      reason: parsed.reason,
+      hasCode: Boolean(code),
+      stateLength: state?.length ?? 0,
+      secretConfigured: Boolean(process.env.GOOGLE_CLIENT_SECRET?.trim()),
+    });
+    const reason =
+      parsed.reason === "bad_signature"
+        ? "bad_secret"
+        : parsed.reason === "expired"
+          ? "expired"
+          : "invalid_state";
+    return NextResponse.redirect(`${origin}/app?google=error&reason=${reason}`);
+  }
+
+  if (!code) {
     return NextResponse.redirect(
       `${origin}/app?google=error&reason=invalid_state`,
     );
@@ -32,7 +48,6 @@ export async function GET(request: Request) {
     const tokens = await exchangeGoogleCode({
       code,
       redirectUri: getGoogleRedirectUri(request),
-      verifier: parsed.verifier,
     });
     const res = NextResponse.redirect(`${origin}/app?google=connected`);
     applyAccessTokenCookie(res, tokens.access_token, tokens.expires_in, request);
